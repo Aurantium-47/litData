@@ -825,6 +825,7 @@ class StreamingDataLoader(DataLoader):
             num_workers=num_workers,
             prefetch_factor=self._prefetch_factor,
             collate_fn=collate_fn,
+            drop_last=bool(drop_last),
             **kwargs,
         )  # type: ignore
 

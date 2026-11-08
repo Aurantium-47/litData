@@ -680,3 +680,48 @@ def test_dataloader_fork_parquet_loader_deadlock_guard():
 
     combined_pytree = DummyCombinedDataset([dataset_with_pytree, dataset_with_pytree])
     StreamingDataLoader(combined_pytree, num_workers=2, multiprocessing_context="fork")
+
+
+@pytest.mark.parametrize("drop_last", [None, False, True])
+@pytest.mark.parametrize("resume", [False, True])
+def test_combined_dataloader_drops_incomplete_batch(tmpdir, drop_last, resume):
+    datasets = []
+    for dataset_index, size in enumerate((8, 1000)):
+        path = str(tmpdir.join(str(dataset_index)))
+        cache = Cache(input_dir=path, chunk_size=8)
+        for index in range(size):
+            cache[index] = index + dataset_index * 1000
+        cache.done()
+        cache.merge()
+        datasets.append(StreamingDataset(path))
+
+    dataset = CombinedStreamingDataset(datasets, weights=[0.1, 0.9], iterate_over_all=False, seed=42)
+    loader = StreamingDataLoader(dataset, batch_size=8, num_workers=0, drop_last=drop_last)
+    expected_batches = list(loader)
+    loader = StreamingDataLoader(
+        CombinedStreamingDataset(
+            [StreamingDataset(child.input_dir.path) for child in datasets],
+            weights=[0.1, 0.9],
+            iterate_over_all=False,
+            seed=42,
+        ),
+        batch_size=8,
+        num_workers=0,
+        drop_last=drop_last,
+    )
+    batches = []
+    if resume:
+        iterator = iter(loader)
+        batches.extend([next(iterator), next(iterator)])
+        state = loader.state_dict()
+        restored = CombinedStreamingDataset(
+            [StreamingDataset(child.input_dir.path) for child in datasets],
+            weights=[0.1, 0.9],
+            iterate_over_all=False,
+            seed=42,
+        )
+        loader = StreamingDataLoader(restored, batch_size=8, num_workers=0, drop_last=drop_last)
+        loader.load_state_dict(state)
+    batches.extend(loader)
+    assert [len(batch) for batch in batches] == [8] * 5 + ([] if drop_last else [4])
+    assert torch.equal(torch.cat(batches), torch.cat(expected_batches))
